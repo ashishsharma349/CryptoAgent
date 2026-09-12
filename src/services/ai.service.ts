@@ -12,12 +12,17 @@ export const TweetSchema = z.object({
 
 export type TweetDraft = z.infer<typeof TweetSchema>;
 
-export async function generateTweet(trendingData: any): Promise<TweetDraft | null> {
+export async function generateTweet(trendingData: any, pastTweets: string[] = []): Promise<TweetDraft | null> {
+    const memoryContext = pastTweets.length > 0 
+        ? `\nRECENT TWEETS (DO NOT REPEAT THESE HOOKS, JOKES, OR ANGLES):\n` + pastTweets.map(t => `- ${t}`).join('\n')
+        : '';
+
     const prompt = `
 ${config.SYSTEM_PROMPT}
 
 Current Trending Coins:
 ${JSON.stringify(trendingData, null, 2)}
+${memoryContext}
 
 Write a short, engaging tweet about one of these trending coins.
 Return ONLY valid JSON matching this structure:
@@ -29,7 +34,7 @@ Return ONLY valid JSON matching this structure:
 }`;
 
     try {
-        return await withRetry('OmniRoute generation', async () => {
+        return await withRetry('AI generation', async () => {
             const response = await fetch(`${config.AI_API_URL}/chat/completions`, {
                 method: 'POST',
                 headers: {
@@ -44,12 +49,11 @@ Return ONLY valid JSON matching this structure:
                 })
             });
 
-            if (!response.ok) throw new Error(`OmniRoute error: ${response.status}`);
+            if (!response.ok) throw new Error(`AI error: ${response.status}`);
             
             const data = await response.json();
             let content = data.choices[0].message.content;
             
-            // Strip markdown fences if AI ignores response_format
             const firstBrace = content.indexOf('{');
             const lastBrace = content.lastIndexOf('}');
             if (firstBrace !== -1 && lastBrace !== -1) {
@@ -57,7 +61,7 @@ Return ONLY valid JSON matching this structure:
             }
 
             const parsed = JSON.parse(content);
-            return TweetSchema.parse(parsed); // Validates strictly
+            return TweetSchema.parse(parsed);
         }, 3, 2000);
     } catch (error) {
         logger.error(`Failed to generate tweet: ${error}`);
