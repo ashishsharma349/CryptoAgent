@@ -1,13 +1,12 @@
 import cron from 'node-cron';
 import { logger } from './utils/logger.util';
-import { checkDailyLimit, incrementDailyCounter, connectDB } from './repo/mongo.repo';
+import { checkDailyLimit, connectDB, logAction } from './repo/mongo.repo';
 import { sendDraftForApproval } from './bot/telegram.bot';
 import { config } from './config/env.config';
-
-const MOCK_MENTIONS = [
-    { id: '101', text: '@CryptoAgent what do you think about $SOL right now?', user: '@degen_danny' },
-    { id: '102', text: '@CryptoAgent is the bull market over??', user: '@panic_seller' }
-];
+import { getTwitterClient } from './services/twitter';
+import { TweetSchema } from './services/ai.service';
+import { withRetry } from './utils/retry.util';
+import { validateCompliance } from './utils/compliance.util';
 
 export function startEngagementLoop() {
     cron.schedule('*/15 * * * *', async () => {
@@ -22,20 +21,23 @@ export function startEngagementLoop() {
             const db = await connectDB();
             const collection = db.collection('accounts_config');
             let configDoc = await collection.findOne({ account_id: config.ACCOUNT_ID });
-            let lastCursor = configDoc?.last_mention_cursor || '100';
+            let lastCursor = configDoc?.last_mention_cursor || undefined;
 
-            const newMentions = MOCK_MENTIONS.filter(m => parseInt(m.id) > parseInt(lastCursor));
+            const client = getTwitterClient();
+            const newMentions = await client.getMentions(lastCursor);
+            
             if (newMentions.length === 0) {
                 logger.info('No new mentions found.');
                 return;
             }
 
+            // Just reply to the first new mention for rate limits, update cursor to it
             const mentionToReply = newMentions[0];
-            logger.info(`Generating reply for mention from ${mentionToReply.user}`);
+            logger.info(`Generating reply for mention from ${mentionToReply.username}`);
 
             const prompt = `
 ${config.SYSTEM_PROMPT}
-You received this mention from ${mentionToReply.user}: "${mentionToReply.text}"
+You received this mention from @${mentionToReply.username}: "${mentionToReply.text}"
 Write a short, engaging reply. 
 Return ONLY valid JSON:
 {
@@ -44,9 +46,6 @@ Return ONLY valid JSON:
   "text": "your reply here",
   "tickers": []
 }`;
-
-            const { withRetry } = require('./utils/retry.util');
-            const { TweetSchema } = require('./services/ai.service');
 
             const draft = await withRetry('AI Reply Generation', async () => {
                 const response = await fetch(`${config.AI_API_URL}/chat/completions`, {
@@ -66,16 +65,17 @@ Return ONLY valid JSON:
                 const firstBrace = content.indexOf('{');
                 const lastBrace = content.lastIndexOf('}');
                 if (firstBrace !== -1 && lastBrace !== -1) content = content.substring(firstBrace, lastBrace + 1);
-                return TweetSchema.parse(JSON.parse(content));
+                
+                const parsed = TweetSchema.parse(JSON.parse(content));
+                validateCompliance(parsed);
+                return parsed;
             }, 3, 2000);
 
             if (!draft) return;
 
-            const { logAction } = require('./repo/mongo.repo');
-            const dbId = await logAction('pending', `REPLY TO ${mentionToReply.user}: ${draft.text}`, draft.tickers);
+            const dbId = await logAction('pending', `REPLY TO @${mentionToReply.username}: ${draft.text}`, draft.tickers, 'reply');
             
-            await sendDraftForApproval(`REPLY TO ${mentionToReply.user}:\n\n${draft.text}`, dbId);
-            await incrementDailyCounter('reply');
+            await sendDraftForApproval(`REPLY TO @${mentionToReply.username}`, draft.text, dbId, 'reply', { tweetId: mentionToReply.id });
             
             await collection.updateOne(
                 { account_id: config.ACCOUNT_ID },
@@ -85,7 +85,10 @@ Return ONLY valid JSON:
             
             logger.info('Engagement loop processed successfully.');
         } catch (error) {
-            logger.error(`Engagement loop error: ${error}`);
+            logger.error(`Engagement loop error (or compliance failed): ${error}`);
+            const dbId = await logAction('compliance_failed', 'Reply Generation failed (Compliance/API)', [], 'reply');
+            const { bot } = require('./bot/telegram.bot');
+            await bot.telegram.sendMessage(config.TELEGRAM_CHAT_ID, `🚨 Auto-generation failed for a Reply (Compliance/API). Log ID: ${dbId}`);
         }
     });
 }

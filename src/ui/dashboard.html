@@ -1,0 +1,152 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoAgent Configuration</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; color: #333; max-width: 1200px; margin: 0 auto; padding: 6px; }
+        .grid-container { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .banner { background-color: #fffae6; border-left: 4px solid #ffcc00; padding: 8px; margin-bottom: 15px; border-radius: 4px; font-weight: bold; }
+        .card { background: white; padding: 6px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 10px; }
+        h2 { margin-top: 0; font-size: 1.2em; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 5px; }
+        .form-group { margin-bottom: 10px; }
+        label { display: block; font-weight: bold; margin-bottom: 2px; }
+        input[type="number"], input[type="text"], textarea { width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        .help-text { font-size: 0.85em; color: #666; margin-top: 5px; }
+        button { background-color: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: bold; }
+        button:hover { background-color: #0056b3; }
+        .toast { display: none; background-color: #28a745; color: white; padding: 6px; text-align: center; border-radius: 4px; margin-bottom: 10px; }
+      h1 { font-size: 1.5em; margin-bottom: 10px; margin-top: 0; }
+</style>
+</head>
+<body>
+    <h1>🤖 CryptoAgent Admin Panel</h1>
+    
+    <div class="banner">
+        ⚠️ NOTE: Changes to Post Limits & Timings apply tonight at 12:00 AM (Midnight) (Next Snapshot). <br>
+        Account lists, timeouts, and sources apply immediately on the next loop.
+    </div>
+    
+    <div id="toast" class="toast">Configurations Saved Successfully!</div>
+
+    <form id="configForm">
+        <div class="grid-container">
+        <div class="card">
+            <h2>⏱️ Agent Posting Limits & Timing (Next-Day Effect)</h2>
+            <div class="form-group">
+                <label>Min Posts Per Day</label>
+                <input type="number" id="min_posts_per_day">
+                <div class="help-text">Minimum original tweets the agent must post daily.</div>
+            </div>
+            <div class="form-group">
+                <label>Max Posts Per Day</label>
+                <input type="number" id="max_posts_per_day">
+                <div class="help-text">Maximum original tweets the agent is allowed to post daily.</div>
+            </div>
+            <div class="form-group">
+                <label>Schedule Start Hour (0-23)</label>
+                <input type="number" id="schedule_start_hour" min="0" max="23">
+                <div class="help-text">The earliest hour the bot is allowed to post (e.g., 2 = 2 AM).</div>
+            </div>
+            <div class="form-group">
+                <label>Schedule End Hour (0-23)</label>
+                <input type="number" id="schedule_end_hour" min="0" max="23">
+                <div class="help-text">The latest hour the bot is allowed to post (e.g., 22 = 10 PM).</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>⚡ Immediate Effect Settings (Accounts, Timeouts)</h2>
+            <div class="form-group">
+                <label>Auto-Post Timeout (Minutes)</label>
+                <input type="number" id="auto_post_timeout_minutes">
+                <div class="help-text">How long to wait for your Telegram approval before auto-posting the draft.</div>
+            </div>
+            <div class="form-group">
+                <label>Max Replies Per Day (Mentions)</label>
+                <input type="number" id="max_replies_per_day">
+                <div class="help-text">Maximum number of replies to user mentions per day (spam protection).</div>
+            </div>
+            <div class="form-group">
+                <label>Active Data Sources (Comma separated)</label>
+                <input type="text" id="active_data_sources" placeholder="coingecko, coinmarketcap">
+                <div class="help-text">List of APIs the agent should read before writing an original post.</div>
+            </div>
+            <div class="form-group">
+                <label>Monitored Accounts for Quote Tweets (Comma separated)</label>
+                <textarea id="monitored_accounts" rows="2" placeholder="@elonmusk, @vitalikbuterin"></textarea>
+                <div class="help-text">List of Twitter handles the agent will monitor to generate Quote Tweets.</div>
+            </div>
+            <div class="form-group">
+                <label>Quote Tweet Monitor Interval (Hours)</label>
+                <input type="number" id="monitor_interval_hours">
+                <div class="help-text">How often to poll target accounts (prevents API/Token cost explosions).</div>
+            </div>
+        </div>
+        </div>
+
+        <button type="submit">💾 Save Configurations</button>
+    </form>
+
+    <script>
+        // Load initial data
+        fetch('/api/config')
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('min_posts_per_day').value = data.min_posts_per_day;
+                document.getElementById('max_posts_per_day').value = data.max_posts_per_day;
+                document.getElementById('schedule_start_hour').value = data.schedule_start_hour;
+                document.getElementById('schedule_end_hour').value = data.schedule_end_hour;
+                document.getElementById('auto_post_timeout_minutes').value = data.auto_post_timeout_minutes;
+                document.getElementById('max_replies_per_day').value = data.max_replies_per_day;
+                document.getElementById('active_data_sources').value = data.active_data_sources.join(', ');
+                document.getElementById('monitored_accounts').value = data.monitored_accounts.join(', ');
+                document.getElementById('monitor_interval_hours').value = data.monitor_interval_hours;
+            });
+
+        // Save data
+        document.getElementById('configForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const payload = {};
+            const min_p = document.getElementById('min_posts_per_day').value;
+            if (min_p !== '') payload.min_posts_per_day = parseInt(min_p);
+            
+            const max_p = document.getElementById('max_posts_per_day').value;
+            if (max_p !== '') payload.max_posts_per_day = parseInt(max_p);
+            
+            const s_start = document.getElementById('schedule_start_hour').value;
+            if (s_start !== '') payload.schedule_start_hour = parseInt(s_start);
+            
+            const s_end = document.getElementById('schedule_end_hour').value;
+            if (s_end !== '') payload.schedule_end_hour = parseInt(s_end);
+            
+            const ap_time = document.getElementById('auto_post_timeout_minutes').value;
+            if (ap_time !== '') payload.auto_post_timeout_minutes = parseInt(ap_time);
+            
+            const m_rep = document.getElementById('max_replies_per_day').value;
+            if (m_rep !== '') payload.max_replies_per_day = parseInt(m_rep);
+            
+            const a_src = document.getElementById('active_data_sources').value;
+            if (a_src !== '') payload.active_data_sources = a_src.split(',').map(s => s.trim()).filter(s => s);
+            
+            const m_acc = document.getElementById('monitored_accounts').value;
+            // Always allow clearing the monitored accounts list
+            payload.monitored_accounts = m_acc.split(',').map(s => s.trim()).filter(s => s);
+            
+            const m_int = document.getElementById('monitor_interval_hours').value;
+            if (m_int !== '') payload.monitor_interval_hours = parseInt(m_int);
+
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }).then(() => {
+                const toast = document.getElementById('toast');
+                toast.style.display = 'block';
+                setTimeout(() => toast.style.display = 'none', 3000);
+            });
+        });
+    </script>
+</body>
+</html>

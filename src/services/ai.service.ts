@@ -61,7 +61,12 @@ Return ONLY valid JSON matching this structure:
             }
 
             const parsed = JSON.parse(content);
-            return TweetSchema.parse(parsed);
+            const draft = TweetSchema.parse(parsed);
+            
+            const { validateCompliance } = require('../utils/compliance.util');
+            validateCompliance(draft);
+            
+            return draft;
         }, 3, 2000);
     } catch (error) {
         logger.error(`Failed to generate tweet: ${error}`);
