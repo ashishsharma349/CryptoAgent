@@ -30,6 +30,25 @@ export async function logAction(status: 'pending' | 'approved' | 'rejected' | 'p
     return result.insertedId.toString();
 }
 
+export async function startPipelineRun() {
+    const database = await connectDB();
+    const result = await database.collection('pipeline_runs').insertOne({
+        account_id: config.ACCOUNT_ID,
+        status: 'started',
+        started_at: new Date().toISOString()
+    });
+    return result.insertedId.toString();
+}
+
+export async function updatePipelineRun(runId: string, updates: Record<string, any>) {
+    const database = await connectDB();
+    const { ObjectId } = require('mongodb');
+    await database.collection('pipeline_runs').updateOne(
+        { _id: new ObjectId(runId), account_id: config.ACCOUNT_ID },
+        { $set: { ...updates, updated_at: new Date().toISOString() } }
+    );
+}
+
 export async function updateActionStatus(id: string, newStatus: 'approved' | 'rejected' | 'posted' | 'post_failed' | 'compliance_failed', tweet_id?: string, error_message?: string) {
     const database = await connectDB();
     const collection = database.collection('actions_log');
@@ -99,7 +118,7 @@ export async function getAgentConfig() {
     
     // Default seed if not exists
     if (!agentConfig) {
-        agentConfig = {
+            agentConfig = {
             account_id: config.ACCOUNT_ID,
             min_posts_per_day: 3,
             max_posts_per_day: 6,
@@ -107,14 +126,25 @@ export async function getAgentConfig() {
             schedule_start_hour: 9,
             schedule_end_hour: 22,
             auto_post_timeout_minutes: 15,
-            active_data_sources: ['coingecko'],
+            active_data_sources: ['coingecko', 'coindesk', 'cointelegraph', 'bitcoinmagazine'],
             monitored_accounts: [],
             monitor_interval_hours: 2,
             last_monitor_run: 0,
+            twitter_client_type: config.twitter.clientType || 'unofficial',
+            twitter_auth_token: config.twitter.authToken || '',
+            twitter_ct0: config.twitter.ct0 || '',
             updated_at: new Date().toISOString()
         };
         await collection.insertOne(agentConfig);
     }
+    
+    // Add fallbacks for older DB entries
+    if (!agentConfig.twitter_client_type) {
+        agentConfig.twitter_client_type = config.twitter.clientType || 'unofficial';
+        agentConfig.twitter_auth_token = config.twitter.authToken || '';
+        agentConfig.twitter_ct0 = config.twitter.ct0 || '';
+    }
+    
     return agentConfig;
 }
 

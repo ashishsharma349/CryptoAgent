@@ -23,7 +23,7 @@ export function startEngagementLoop() {
             let configDoc = await collection.findOne({ account_id: config.ACCOUNT_ID });
             let lastCursor = configDoc?.last_mention_cursor || undefined;
 
-            const client = getTwitterClient();
+            const client = await getTwitterClient();
             const newMentions = await client.getMentions(lastCursor);
             
             if (newMentions.length === 0) {

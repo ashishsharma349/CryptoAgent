@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -86,6 +86,30 @@
         </div>
         </div>
 
+        <div class="card">
+        <div class="card-header">🔐 Twitter / X Configuration</div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>Twitter Client Type</label>
+                <select id="twitter_client_type">
+                    <option value="unofficial">Unofficial (Puppeteer Stealth - Free)</option>
+                    <option value="official">Official (API v2 - Paid)</option>
+                </select>
+                <div class="help-text">Choose which adapter to use for connecting to Twitter.</div>
+            </div>
+            <div class="form-group">
+                <label>Twitter Auth Token (auth_token cookie)</label>
+                <input type="password" id="twitter_auth_token" placeholder="Your auth_token cookie value">
+                <div class="help-text">Only needed for "Unofficial" client type.</div>
+            </div>
+            <div class="form-group">
+                <label>Twitter CT0 Token (ct0 cookie)</label>
+                <input type="password" id="twitter_ct0" placeholder="Your ct0 cookie value">
+                <div class="help-text">Only needed for "Unofficial" client type.</div>
+            </div>
+        </div>
+        </div>
+
         <button type="submit">💾 Save Configurations</button>
     </form>
 
@@ -103,6 +127,9 @@
                 document.getElementById('active_data_sources').value = data.active_data_sources.join(', ');
                 document.getElementById('monitored_accounts').value = data.monitored_accounts.join(', ');
                 document.getElementById('monitor_interval_hours').value = data.monitor_interval_hours;
+                document.getElementById('twitter_client_type').value = data.twitter_client_type || 'unofficial';
+                document.getElementById('twitter_auth_token').value = data.twitter_auth_token || '';
+                document.getElementById('twitter_ct0').value = data.twitter_ct0 || '';
             });
 
         // Save data
@@ -136,6 +163,12 @@
             
             const m_int = document.getElementById('monitor_interval_hours').value;
             if (m_int !== '') payload.monitor_interval_hours = parseInt(m_int);
+
+            payload.twitter_client_type = document.getElementById('twitter_client_type').value;
+            const authToken = document.getElementById('twitter_auth_token').value;
+            if (authToken && authToken !== '********') payload.twitter_auth_token = authToken;
+            const ct0 = document.getElementById('twitter_ct0').value;
+            if (ct0 && ct0 !== '********') payload.twitter_ct0 = ct0;
 
             fetch('/api/config', {
                 method: 'POST',

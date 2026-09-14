@@ -1,0 +1,44 @@
+{
+  "data": {
+    "viewer_v2": {
+      "user_results": {
+        "result": {
+          "__typename": "User",
+          "notification_timeline": {
+            "id": "VGltZWxpbmU6DAC7CgABFLi3tKlaQAIIAAIAAAACAAA=",
+            "timeline": {
+              "instructions": [
+                {
+                  "type": "TimelineClearCache"
+                },
+                {
+                  "entries": [
+                    {
+                      "content": {
+                        "__typename": "TimelineTimelineCursor",
+                        "cursorType": "Top",
+                        "entryType": "TimelineTimelineCursor",
+                        "value": "DAABDAABCgABFLi3tKlaQAIIAAIAAAACCAADSQ3bEQgABJ75gXwACwACAAAAC0FBQUFBQUFBQUFBAAA"
+                      },
+                      "entryId": "cursor-top-1",
+                      "sortIndex": "1"
+                    }
+                  ],
+                  "type": "TimelineAddEntries"
+                },
+                {
+                  "type": "TimelineClearEntriesUnreadState"
+                },
+                {
+                  "sort_index": "1789347147346",
+                  "type": "TimelineMarkEntriesUnreadGreaterThanSortIndex"
+                }
+              ]
+            }
+          },
+          "rest_id": "1493145263036579842"
+        }
+      }
+    }
+  }
+}

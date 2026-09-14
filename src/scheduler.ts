@@ -2,8 +2,9 @@ import cron from 'node-cron';
 import { logger } from './utils/logger.util';
 import { config } from './config/env.config';
 import { getAgentConfig } from './repo/mongo.repo';
-import { connectDB, checkDailyLimit, incrementDailyCounter, getRecentTweets } from './repo/mongo.repo';
+import { connectDB, checkDailyLimit, getRecentTweets, startPipelineRun, updatePipelineRun } from './repo/mongo.repo';
 import { fetchTrendingCoins } from './services/coingecko.service';
+import { fetchNewsSources } from './services/news.service';
 import { generateTweet } from './services/ai.service';
 import { sendDraftForApproval } from './bot/telegram.bot';
 
@@ -20,10 +21,10 @@ export function startMasterScheduler() {
     logger.info('Master Scheduler started.');
 }
 
-async function planDailyPosts() {
+export async function planDailyPosts(overrideDate?: Date) {
     const agentConfig = await getAgentConfig();
-    const minPosts = agentConfig.min_posts_per_day || 3;
-    const maxPosts = agentConfig.max_posts_per_day || 6;
+    const minPosts = parseInt(agentConfig.min_posts_per_day as any) || 3;
+    const maxPosts = parseInt(agentConfig.max_posts_per_day as any) || 6;
     const numPosts = Math.floor(Math.random() * (maxPosts - minPosts + 1)) + minPosts;
     logger.info(`Planning ${numPosts} posts for today.`);
     
@@ -31,21 +32,33 @@ async function planDailyPosts() {
     const collection = db.collection('planned_posts');
     
     const planned = [];
-    const now = new Date();
+    const scheduledTimes = new Set<string>();
+    const now = overrideDate || new Date();
     
-    for (let i = 0; i < numPosts; i++) {
+    const startHour = parseInt(agentConfig.schedule_start_hour as any) || 9;
+    const endHour = parseInt(agentConfig.schedule_end_hour as any) || 22;
+
+    let attempts = 0;
+    while (planned.length < numPosts && attempts < numPosts * 20) {
+        attempts++;
         const postTime = new Date(now);
-        const randomHour = Math.floor(Math.random() * (agentConfig.schedule_end_hour - agentConfig.schedule_start_hour + 1)) + agentConfig.schedule_start_hour;
+        const randomHour = Math.floor(Math.random() * (endHour - startHour + 1)) + startHour;
         const randomMinute = Math.floor(Math.random() * 60);
         postTime.setHours(randomHour, randomMinute, 0, 0);
-        
-        if (postTime > now) {
+        const scheduledTime = postTime.toISOString();
+
+        if (postTime > now && !scheduledTimes.has(scheduledTime)) {
+            scheduledTimes.add(scheduledTime);
             planned.push({
                 account_id: config.ACCOUNT_ID,
-                scheduled_time: postTime.toISOString(),
+                scheduled_time: scheduledTime,
                 executed: false
             });
         }
+    }
+
+    if (planned.length < numPosts) {
+        logger.warn(`Only ${planned.length}/${numPosts} unique future post slots could be planned.`);
     }
     
     if (planned.length > 0) {
@@ -55,38 +68,55 @@ async function planDailyPosts() {
     }
 }
 
-export async function runPipeline() {
+export async function runPipeline(): Promise<boolean> {
     try {
         const canPost = await checkDailyLimit('post');
         if (!canPost) {
             logger.warn('Daily post limit reached. Aborting pipeline.');
-            return;
+            return false;
         }
 
         logger.info('Starting CryptoAgent Content Pipeline...');
+        const pipelineRunId = await startPipelineRun();
+        const agentConfig = await getAgentConfig();
         
         logger.info('Fetching market data...');
         const trending = await fetchTrendingCoins();
-        if (trending.length === 0) {
-            logger.error('No trending data found. Aborting.');
-            return;
+        const news = await fetchNewsSources(agentConfig.active_data_sources || ['coingecko']);
+        await updatePipelineRun(pipelineRunId, {
+            source_snapshot: { trending, news },
+            source_names: agentConfig.active_data_sources || ['coingecko'],
+            source_fetched_at: new Date().toISOString()
+        });
+        if (trending.length === 0 && news.length === 0) {
+            logger.error('No content source data found. Aborting.');
+            await updatePipelineRun(pipelineRunId, { status: 'source_failed', error: 'No content source data found' });
+            return false;
         }
 
         logger.info('Fetching 7-day memory...');
         const pastTweets = await getRecentTweets(config.MEMORY_DAYS);
+        await updatePipelineRun(pipelineRunId, { memory_snapshot: pastTweets, memory_days: config.MEMORY_DAYS });
 
         logger.info('Generating tweet via AI...');
-        const draft = await generateTweet(trending, pastTweets);
+        const draft = await generateTweet({ trending, news }, pastTweets);
         const { logAction } = require('./repo/mongo.repo');
         
         if (!draft) {
             logger.error('Failed to generate draft (or compliance failed). Aborting.');
+            await updatePipelineRun(pipelineRunId, { status: 'ai_failed', error: 'Draft generation or compliance failed' });
             const dbId = await logAction('compliance_failed', 'Generation failed (Compliance or API error)', [], 'post');
             const { bot } = require('./bot/telegram.bot');
             await bot.telegram.sendMessage(config.TELEGRAM_CHAT_ID, `🚨 Auto-generation failed for a scheduled post (Compliance/API). Log ID: ${dbId}. Attempting backfill...`);
             await scheduleBackfillPost();
-            return;
+            return false;
         }
+
+        await updatePipelineRun(pipelineRunId, {
+            status: 'draft_ready',
+            ai_output: draft,
+            ai_completed_at: new Date().toISOString()
+        });
 
         logger.info('Sending to Telegram for approval...');
         const dbId = await logAction('pending', draft.text, draft.tickers, 'post');
@@ -95,8 +125,10 @@ export async function runPipeline() {
         await sendDraftForApproval('', draft.text, dbId, 'post', { trending, pastTweets });
         
         logger.info('Pipeline complete. Sent to Telegram with Auto-Post Timer.');
+        return true;
     } catch (error) {
         logger.error(`Pipeline failed: ${error}`);
+        return false;
     }
 }
 
@@ -198,11 +230,11 @@ export async function scheduleBackfillPost() {
     logger.info(`Scheduled backfill post for ${postTime.toISOString()}`);
 }
 
-async function executePlannedPosts() {
+export async function executePlannedPosts(overrideDate?: Date) {
     const db = await connectDB();
     const collection = db.collection('planned_posts');
     
-    const nowISO = new Date().toISOString();
+    const nowISO = (overrideDate || new Date()).toISOString();
     
     const pendingPost = await collection.findOne({
         account_id: config.ACCOUNT_ID,
@@ -212,7 +244,11 @@ async function executePlannedPosts() {
     
     if (pendingPost) {
         logger.info(`Time reached for planned post: ${pendingPost.scheduled_time}. Executing...`);
-        await collection.updateOne({ _id: pendingPost._id }, { "$set": { executed: true } });
-        await runPipeline();
+        const pipelineSucceeded = await runPipeline();
+        if (pipelineSucceeded) {
+            await collection.updateOne({ _id: pendingPost._id }, { "$set": { executed: true, executed_at: new Date().toISOString() } });
+        } else {
+            logger.warn(`Planned post ${pendingPost._id} was not marked executed because the pipeline failed.`);
+        }
     }
 }

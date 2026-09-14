@@ -23,7 +23,7 @@ interface DraftContext {
 const pendingContexts = new Map<string, DraftContext>();
 
 export async function executeTwitterPost(dbId: string, rawDraftText: string, type: 'post' | 'reply' | 'quote', contextData: any) {
-    const client = getTwitterClient();
+    const client = await getTwitterClient();
     try {
         let tweetId = '';
         if (type === 'post') {
