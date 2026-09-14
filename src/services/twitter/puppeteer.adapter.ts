@@ -91,7 +91,7 @@ function trackCreatedTweet(page: Page) {
     page.on('response', listener);
 
     return async () => {
-        await Promise.allSettled([...responseTasks]);
+        await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, 10000))]);
         page.off('response', listener);
         return createdTweetId;
     };
@@ -211,7 +211,7 @@ export class PuppeteerTwitterAdapter implements ITwitterClient {
             
             await page.click('[data-testid="tweetButton"]');
             await new Promise(r => setTimeout(r, 5000));
-            await Promise.allSettled([...responseTasks]);
+            await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, 10000))]);
 
             if (!createdReplyId) throw new Error('X did not return a created reply ID');
             return createdReplyId;
@@ -281,7 +281,7 @@ export class PuppeteerTwitterAdapter implements ITwitterClient {
                 await page.goto('https://x.com/notifications/mentions', { waitUntil: 'domcontentloaded', timeout: 30000 });
                 await new Promise(r => setTimeout(r, 5000));
             }, 3, 2000);
-            await Promise.allSettled([...responseTasks]);
+            await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, 10000))]);
             
             return Array.from(new Map(
                 mentions
@@ -325,7 +325,7 @@ export class PuppeteerTwitterAdapter implements ITwitterClient {
                 await page.goto(`https://x.com/${username}`, { waitUntil: 'networkidle2', timeout: 45000 });
                 await new Promise(r => setTimeout(r, 7000));
             }, 3, 2000);
-            await Promise.allSettled([...responseTasks]);
+            await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, 10000))]);
             
             return Array.from(new Map(tweets.map(tweet => [tweet.id, tweet])).values())
                 .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
