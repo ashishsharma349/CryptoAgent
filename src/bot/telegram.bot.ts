@@ -119,6 +119,9 @@ bot.on('callback_query', async (ctx) => {
     const ctxData = pendingContexts.get(dbId);
     // @ts-ignore
     const message = ctx.callbackQuery.message;
+
+    // Acknowledge Telegram immediately; Twitter/AI work can take longer than Telegram's callback window.
+    await ctx.answerCbQuery();
     
     if (action === 'approve' || action === 'reject') {
         if (activeTimers.has(dbId)) {
@@ -131,7 +134,6 @@ bot.on('callback_query', async (ctx) => {
     try {
         if (action === 'approve') {
             if (!ctxData) {
-                await ctx.answerCbQuery('Context expired.');
                 return;
             }
             logger.info(`Received APPROVE for draft ${dbId}`);
@@ -158,12 +160,10 @@ bot.on('callback_query', async (ctx) => {
             
         } else if (action === 'regenerate') {
             if (!ctxData) {
-                await ctx.answerCbQuery('Context expired.');
                 return;
             }
             
             if (ctxData.regenerateCount >= 3) {
-                await ctx.answerCbQuery('Max regenerations reached.');
                 return;
             }
             
@@ -227,7 +227,6 @@ bot.on('callback_query', async (ctx) => {
             await sendDraftForApproval(ctxData.displayLabel, newDraft.text, dbId, ctxData.type, ctxData.contextData, (message as any).message_id, ctxData.regenerateCount + 1);
         }
         
-        await ctx.answerCbQuery();
     } catch (error) {
         logger.error(`Error handling callback: ${error}`);
     }

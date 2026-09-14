@@ -34,6 +34,7 @@ export async function planDailyPosts(overrideDate?: Date) {
     const planned = [];
     const scheduledTimes = new Set<string>();
     const now = overrideDate || new Date();
+    const planningDate = now.toISOString().slice(0, 10);
     
     const startHour = parseInt(agentConfig.schedule_start_hour as any) || 9;
     const endHour = parseInt(agentConfig.schedule_end_hour as any) || 22;
@@ -51,6 +52,7 @@ export async function planDailyPosts(overrideDate?: Date) {
             scheduledTimes.add(scheduledTime);
             planned.push({
                 account_id: config.ACCOUNT_ID,
+                planning_date: planningDate,
                 scheduled_time: scheduledTime,
                 executed: false
             });
@@ -222,6 +224,7 @@ export async function scheduleBackfillPost() {
     const collection = db.collection('planned_posts');
     await collection.insertOne({
         account_id: config.ACCOUNT_ID,
+        planning_date: now.toISOString().slice(0, 10),
         scheduled_time: postTime.toISOString(),
         executed: false,
         is_backfill: true
@@ -235,9 +238,16 @@ export async function executePlannedPosts(overrideDate?: Date) {
     const collection = db.collection('planned_posts');
     
     const nowISO = (overrideDate || new Date()).toISOString();
+    const planningDate = (overrideDate || new Date()).toISOString().slice(0, 10);
+
+    await collection.updateMany(
+        { account_id: config.ACCOUNT_ID, executed: false, planning_date: { $lt: planningDate } },
+        { $set: { executed: true, status: 'expired', expired_at: new Date().toISOString() } }
+    );
     
     const pendingPost = await collection.findOne({
         account_id: config.ACCOUNT_ID,
+        planning_date: planningDate,
         executed: false,
         scheduled_time: { "$lte": nowISO }
     });
