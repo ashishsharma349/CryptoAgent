@@ -8,6 +8,8 @@ import { fetchNewsSources } from './services/news.service';
 import { generateTweet } from './services/ai.service';
 import { sendDraftForApproval } from './bot/telegram.bot';
 
+let plannedPostExecutionInProgress = false;
+
 export function startMasterScheduler() {
     cron.schedule('0 0 * * *', async () => {
         logger.info('Master Scheduler triggered. Planning today\'s posts...');
@@ -234,31 +236,41 @@ export async function scheduleBackfillPost() {
 }
 
 export async function executePlannedPosts(overrideDate?: Date) {
-    const db = await connectDB();
-    const collection = db.collection('planned_posts');
-    
-    const nowISO = (overrideDate || new Date()).toISOString();
-    const planningDate = (overrideDate || new Date()).toISOString().slice(0, 10);
+    if (plannedPostExecutionInProgress) {
+        logger.warn('Skipping scheduler tick because a planned post pipeline is already running.');
+        return;
+    }
 
-    await collection.updateMany(
-        { account_id: config.ACCOUNT_ID, executed: false, planning_date: { $lt: planningDate } },
-        { $set: { executed: true, status: 'expired', expired_at: new Date().toISOString() } }
-    );
-    
-    const pendingPost = await collection.findOne({
-        account_id: config.ACCOUNT_ID,
-        planning_date: planningDate,
-        executed: false,
-        scheduled_time: { "$lte": nowISO }
-    });
-    
-    if (pendingPost) {
-        logger.info(`Time reached for planned post: ${pendingPost.scheduled_time}. Executing...`);
-        const pipelineSucceeded = await runPipeline();
-        if (pipelineSucceeded) {
-            await collection.updateOne({ _id: pendingPost._id }, { "$set": { executed: true, executed_at: new Date().toISOString() } });
-        } else {
-            logger.warn(`Planned post ${pendingPost._id} was not marked executed because the pipeline failed.`);
+    plannedPostExecutionInProgress = true;
+    try {
+        const db = await connectDB();
+        const collection = db.collection('planned_posts');
+        const now = overrideDate || new Date();
+        const nowISO = now.toISOString();
+        const planningDate = now.toISOString().slice(0, 10);
+
+        await collection.updateMany(
+            { account_id: config.ACCOUNT_ID, executed: false, planning_date: { $lt: planningDate } },
+            { $set: { executed: true, status: 'expired', expired_at: new Date().toISOString() } }
+        );
+
+        const pendingPost = await collection.findOne({
+            account_id: config.ACCOUNT_ID,
+            planning_date: planningDate,
+            executed: false,
+            scheduled_time: { "$lte": nowISO }
+        });
+
+        if (pendingPost) {
+            logger.info(`Time reached for planned post: ${pendingPost.scheduled_time}. Executing...`);
+            const pipelineSucceeded = await runPipeline();
+            if (pipelineSucceeded) {
+                await collection.updateOne({ _id: pendingPost._id }, { "$set": { executed: true, executed_at: new Date().toISOString() } });
+            } else {
+                logger.warn(`Planned post ${pendingPost._id} was not marked executed because the pipeline failed.`);
+            }
         }
+    } finally {
+        plannedPostExecutionInProgress = false;
     }
 }

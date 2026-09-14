@@ -115,23 +115,33 @@ bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery.data;
     if (!data) return;
     
-    const [action, dbId] = data.split('_');
+    const match = data.match(/^(approve|reject|regenerate)_(.+)$/);
+    if (!match) {
+        logger.warn(`Unknown Telegram callback data: ${data}`);
+        return;
+    }
+
+    const [, action, dbId] = match;
     const ctxData = pendingContexts.get(dbId);
     // @ts-ignore
     const message = ctx.callbackQuery.message;
 
-    // Acknowledge Telegram immediately; Twitter/AI work can take longer than Telegram's callback window.
-    await ctx.answerCbQuery();
-    
-    if (action === 'approve' || action === 'reject') {
-        if (activeTimers.has(dbId)) {
-            clearTimeout(activeTimers.get(dbId)!);
-            activeTimers.delete(dbId);
-        }
-        pendingContexts.delete(dbId);
-    }
-    
     try {
+        // Acknowledge immediately, but do not block the action if Telegram reports a stale query.
+        try {
+            await ctx.answerCbQuery();
+        } catch (error) {
+            logger.warn(`Telegram callback acknowledgement failed for ${dbId}: ${error}`);
+        }
+    
+        if (action === 'approve' || action === 'reject') {
+            if (activeTimers.has(dbId)) {
+                clearTimeout(activeTimers.get(dbId)!);
+                activeTimers.delete(dbId);
+            }
+            pendingContexts.delete(dbId);
+        }
+
         if (action === 'approve') {
             if (!ctxData) {
                 return;
