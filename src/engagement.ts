@@ -31,27 +31,36 @@ export function startEngagementLoop() {
                 return;
             }
 
-            // Just reply to the first new mention for rate limits, update cursor to it
-            const mentionToReply = newMentions[0];
-            logger.info(`Generating reply for mention from ${mentionToReply.username}`);
-
-            // DB-FIRST: Save mention to DB before calling AI to prevent data loss
             const mentionsCollection = db.collection('engagement_mentions');
-            await mentionsCollection.updateOne(
-                { account_id: config.ACCOUNT_ID, mention_id: mentionToReply.id },
-                {
-                    $set: {
+            await mentionsCollection.createIndex({ account_id: 1, mention_id: 1 }, { unique: true });
+
+            let unprocessedMention = null;
+            for (const mention of newMentions) {
+                try {
+                    await mentionsCollection.insertOne({
                         account_id: config.ACCOUNT_ID,
-                        mention_id: mentionToReply.id,
-                        username: mentionToReply.username,
-                        text: mentionToReply.text,
-                        created_at: mentionToReply.created_at,
+                        mention_id: mention.id,
+                        username: mention.username,
+                        text: mention.text,
+                        created_at: mention.created_at,
                         fetched_at: new Date().toISOString(),
                         processing_status: 'fetched'
-                    }
-                },
-                { upsert: true }
-            );
+                    });
+                    unprocessedMention = mention;
+                    break;
+                } catch (error: any) {
+                    if (error.code === 11000) continue;
+                    throw error;
+                }
+            }
+
+            if (!unprocessedMention) {
+                logger.info('No new unprocessed mentions found. Waiting for pending approvals.');
+                return;
+            }
+
+            const mentionToReply = unprocessedMention;
+            logger.info(`Generating reply for mention from ${mentionToReply.username}`);
 
             const prompt = `
 ${config.SYSTEM_PROMPT}

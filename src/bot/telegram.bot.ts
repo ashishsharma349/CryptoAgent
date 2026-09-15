@@ -1,4 +1,4 @@
-import { Telegraf, Markup } from 'telegraf';
+﻿import { Telegraf, Markup } from 'telegraf';
 import https from 'https';
 import { config } from '../config/env.config';
 import { getAgentConfig, updateActionStatus, incrementDailyCounter } from '../repo/mongo.repo';
@@ -22,7 +22,7 @@ interface DraftContext {
 }
 const pendingContexts = new Map<string, DraftContext>();
 
-export async function executeTwitterPost(dbId: string, rawDraftText: string, type: 'post' | 'reply' | 'quote', contextData: any) {
+export async function executeTwitterPost(dbId: string, rawDraftText: string, type: 'post' | 'reply' | 'quote' | 'repost', contextData: any) {
     const client = await getTwitterClient();
     try {
         let tweetId = '';
