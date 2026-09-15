@@ -274,3 +274,11 @@ bot.telegram.deleteWebhook().then(() => {
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+export async function sendAlert(message: string) {
+    try {
+        await bot.telegram.sendMessage(config.TELEGRAM_CHAT_ID, message);
+    } catch (e) {
+        logger.error(Failed to send alert: );
+    }
+}

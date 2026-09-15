@@ -1,4 +1,4 @@
-import { config } from '../config/env.config';
+﻿import { config } from '../config/env.config';
 import { z } from 'zod';
 import { logger } from '../utils/logger.util';
 import { withRetry } from '../utils/retry.util';
@@ -112,5 +112,37 @@ Return ONLY valid JSON matching this structure:
     } catch (error) {
         logger.error(`Failed to generate tweet: ${error}`);
         return null;
+    }
+}
+
+const RelevanceSchema = z.object({ relevant: z.boolean() });
+export async function evaluateTweetRelevance(tweetText: string): Promise<{ relevant: boolean, error?: boolean }> {
+    try {
+        if (!tweetText.trim()) throw new Error('Cannot evaluate an empty tweet');
+        const prompt = Analyze if the following tweet is related to cryptocurrency, blockchain, web3, trading, finance, tech, or markets.\nTweet: ""\nReturn ONLY valid JSON:\n{\n  "relevant": true/false\n};
+        
+        const response = await fetch(${config.AI_API_URL}/chat/completions, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': Bearer  },
+            body: JSON.stringify({
+                model: config.AI_MODEL,
+                messages: [{ role: 'user', content: prompt }],
+                response_format: { type: "json_object" }
+            })
+        });
+
+        if (!response.ok) throw new Error(AI error: );
+        const data = await response.json();
+        let content = data.choices[0].message.content;
+        const firstBrace = content.indexOf('{');
+        const lastBrace = content.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1) content = content.substring(firstBrace, lastBrace + 1);
+        
+        const parsed = RelevanceSchema.parse(JSON.parse(content));
+        return { relevant: parsed.relevant };
+    } catch (error) {
+        logger.error(Failed to evaluate tweet relevance: );
+        // ASSUME RELEVANT ON FAILURE to prevent silent dropping of coverage
+        return { relevant: true, error: true };
     }
 }

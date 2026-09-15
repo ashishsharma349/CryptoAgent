@@ -1,4 +1,4 @@
-﻿const SIMULATION_REAL_MINUTES = process.env.SIM_MINS ? parseInt(process.env.SIM_MINS) : 30; 
+const SIMULATION_REAL_MINUTES = process.env.SIM_MINS ? parseInt(process.env.SIM_MINS) : 30; 
 const productionAccountId = process.env.ACCOUNT_ID || 'crypto_agent_01';
 process.env.ACCOUNT_ID = process.env.SIM_ACCOUNT_ID || `${productionAccountId}_simulation`;
 
@@ -24,6 +24,10 @@ async function runMonitoringAndReposts() {
     const db = (await import('../src/repo/mongo.repo')).connectDB;
     const collection = (await db()).collection('monitored_tweets');
 
+    const { evaluateTweetRelevance } = await import('../src/services/ai.service');
+    let consecutiveEvalFailures = agentConfig.consecutive_eval_failures || 0;
+    const { updateAgentConfig } = await import('../src/repo/mongo.repo');
+
     for (const targetUser of agentConfig.monitored_accounts || []) {
         try {
             const tweet = await client.getLatestTweet(targetUser);
@@ -31,6 +35,31 @@ async function runMonitoringAndReposts() {
 
             const existing = await collection.findOne({ account_id: config.ACCOUNT_ID, tweet_id: tweet.id });
             if (existing) continue;
+
+            const evalResult = await evaluateTweetRelevance(tweet.text);
+            if (evalResult.error) {
+                consecutiveEvalFailures++;
+                await updateAgentConfig({ consecutive_eval_failures: consecutiveEvalFailures });
+                if (consecutiveEvalFailures >= 3) {
+                    const { sendAlert } = await import('../src/bot/telegram.bot');
+                    await sendAlert(`\u26A0\uFE0F Monitoring Eval Alert: Relevance check failed ${consecutiveEvalFailures} times in a row. Defaulting to Assume-Relevant.`);
+                }
+            } else {
+                if (consecutiveEvalFailures > 0) {
+                    consecutiveEvalFailures = 0;
+                    await updateAgentConfig({ consecutive_eval_failures: 0 });
+                }
+            }
+
+            if (!evalResult.relevant) {
+                console.log(`[MONITORING] Skipping tweet ${tweet.id} as irrelevant.`);
+                await collection.updateOne(
+                    { account_id: config.ACCOUNT_ID, tweet_id: tweet.id },
+                    { $set: { processing_status: 'skipped_irrelevant', fetched_at: new Date().toISOString() } },
+                    { upsert: true }
+                );
+                continue;
+            }
 
             await collection.updateOne(
                 { account_id: config.ACCOUNT_ID, tweet_id: tweet.id },

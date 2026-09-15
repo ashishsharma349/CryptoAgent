@@ -35,6 +35,10 @@ export async function checkMonitoredAccounts(overrideDate?: Date) {
         
         logger.info(`[MONITORING] Checking monitored accounts for Quote Tweets: ${accounts.join(', ')}`);
         
+        const { evaluateTweetRelevance } = require('./services/ai.service');
+        const agentConfig = await getAgentConfig();
+        let consecutiveEvalFailures = agentConfig.consecutive_eval_failures || 0;
+
         const client = await getTwitterClient();
         const database = await connectDB();
         const monitoredTweets = database.collection('monitored_tweets');
@@ -44,11 +48,37 @@ export async function checkMonitoredAccounts(overrideDate?: Date) {
                 for (const latestTweet of latestTweets) {
                     if (!latestTweet.id || !latestTweet.text?.trim()) continue;
                     const existing = await monitoredTweets.findOne({ account_id: config.ACCOUNT_ID, tweet_id: latestTweet.id });
-                    if (['ai_pending', 'draft_ready', 'approval_pending', 'reposted', 'rejected'].includes(existing?.processing_status)) {
+                    if (['ai_pending', 'draft_ready', 'approval_pending', 'reposted', 'rejected', 'skipped_irrelevant'].includes(existing?.processing_status)) {
                         logger.info(`[MONITORING] Skipping already processed tweet ${latestTweet.id}`);
                         continue;
                     }
                     const tweetText = latestTweet.text.trim();
+
+                    const evalResult = await evaluateTweetRelevance(tweetText);
+                    if (evalResult.error) {
+                        consecutiveEvalFailures++;
+                        await updateAgentConfig({ consecutive_eval_failures: consecutiveEvalFailures });
+                        if (consecutiveEvalFailures >= 3) {
+                            const { sendAlert } = require('./bot/telegram.bot');
+                            await sendAlert(`\u26A0\uFE0F Monitoring Eval Alert: Relevance check failed ${consecutiveEvalFailures} times in a row. Defaulting to Assume-Relevant.`);
+                        }
+                    } else {
+                        if (consecutiveEvalFailures > 0) {
+                            consecutiveEvalFailures = 0;
+                            await updateAgentConfig({ consecutive_eval_failures: 0 });
+                        }
+                    }
+
+                    if (!evalResult.relevant) {
+                        logger.info(`[MONITORING] Skipping tweet ${latestTweet.id} as irrelevant.`);
+                        await monitoredTweets.updateOne(
+                            { account_id: config.ACCOUNT_ID, tweet_id: latestTweet.id },
+                            { $set: { processing_status: 'skipped_irrelevant', fetched_at: new Date().toISOString() } },
+                            { upsert: true }
+                        );
+                        continue;
+                    }
+
                     await monitoredTweets.updateOne(
                         { account_id: config.ACCOUNT_ID, tweet_id: latestTweet.id },
                         { $set: { account_id: config.ACCOUNT_ID, source_account: targetUser, tweet_id: latestTweet.id, text: tweetText, created_at: latestTweet.created_at, fetched_at: new Date().toISOString(), ai_input_verified: true, processing_status: 'fetched' } },
