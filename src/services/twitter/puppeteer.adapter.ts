@@ -31,21 +31,46 @@ function findTweet(value: any, username: string): Mention | null {
     return null;
 }
 
-function collectTweets(value: any, mentions: Mention[] = []): Mention[] {
+function collectTweets(value: any, mentions: Mention[] = [], usersMap: Record<string, string> = {}): Mention[] {
     if (!value || typeof value !== 'object') return mentions;
+
+    // Collect user mappings if we see them
+    if (value.rest_id && value.legacy?.screen_name) {
+        usersMap[value.rest_id] = value.legacy.screen_name;
+    }
+    if (value.core?.screen_name && value.rest_id) {
+        usersMap[value.rest_id] = value.core.screen_name;
+    }
 
     const tweetId = value.rest_id || value.legacy?.id_str;
     const tweetText = value.legacy?.full_text || value.text;
+    
     if (tweetId && tweetText) {
+        let username = value.core?.user_results?.result?.legacy?.screen_name || 
+                       value.core?.screen_name || 
+                       value.author?.legacy?.screen_name || 
+                       value.legacy?.screen_name;
+                       
+        const userIdStr = value.legacy?.user_id_str || value.user_id_str;
+        
         mentions.push({
             id: tweetId,
             text: tweetText,
-            username: value.core?.user_results?.result?.legacy?.screen_name || 'unknown',
-            created_at: value.legacy?.created_at || value.created_at || new Date().toISOString()
-        });
+            username: username || (userIdStr ? usersMap[userIdStr] : null) || 'unknown',
+            created_at: value.legacy?.created_at || value.created_at || new Date().toISOString(),
+            _userIdStr: userIdStr // Temporary for post-processing
+        } as any);
     }
 
-    for (const child of Object.values(value)) collectTweets(child, mentions);
+    for (const child of Object.values(value)) collectTweets(child, mentions, usersMap);
+    
+    // Post-process to resolve any 'unknown' that we found users for later in the tree
+    for (const m of mentions as any[]) {
+        if (m.username === 'unknown' && m._userIdStr && usersMap[m._userIdStr]) {
+            m.username = usersMap[m._userIdStr];
+        }
+    }
+    
     return mentions;
 }
 
