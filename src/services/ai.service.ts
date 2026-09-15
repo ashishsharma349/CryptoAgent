@@ -1,4 +1,4 @@
-﻿import { config } from '../config/env.config';
+import { config } from '../config/env.config';
 import { z } from 'zod';
 import { logger } from '../utils/logger.util';
 import { withRetry } from '../utils/retry.util';
@@ -53,7 +53,7 @@ export async function shouldRepostTweet(tweetText: string): Promise<boolean> {
     return (await evaluateRepostDecision(tweetText)).should_repost;
 }
 
-export async function generateTweet(trendingData: any, pastTweets: string[] = [], contextOverride?: string): Promise<TweetDraft | null> {
+export async function generateTweet(trendingData: any, pastTweets: string[] = [], contextOverride?: string, lane?: string): Promise<TweetDraft | null> {
     try {
         const agentConfig = await getAgentConfig();
         const basePrompt = agentConfig.system_prompt || config.SYSTEM_PROMPT;
@@ -67,13 +67,23 @@ export async function generateTweet(trendingData: any, pastTweets: string[] = []
             promptStr += `Recent Tweets (Avoid exact repetition): ${JSON.stringify(pastTweets)}\n`;
         }
         
+        const selectedLane = lane || 'pulse';
+        let laneInstruction = '';
+        if (selectedLane === 'pulse') laneInstruction = 'Focus on a quick market update or price action context.';
+        if (selectedLane === 'meme') laneInstruction = 'Make it humorous, slightly edgy, or a crypto culture meme.';
+        if (selectedLane === 'opinion') laneInstruction = 'Share a strong, contrarian, or thoughtful hot take on the market.';
+        if (selectedLane === 'education') laneInstruction = 'Explain a crypto concept, tool, or metric clearly (no financial advice).';
+        if (selectedLane === 'tools') laneInstruction = 'Highlight a useful crypto trading or analysis tool.';
+
+        promptStr += `\nLANE ASSIGNMENT: You must write this tweet in the '${selectedLane}' lane. ${laneInstruction}`;
+        
         promptStr += `\nGenerate a tweet draft matching the persona.
 Return ONLY valid JSON matching this structure:
 {
   "content_type": "post",
-  "lane": "pulse",
-    "text": "your tweet text here",
-    "tickers": []
+  "lane": "${selectedLane}",
+  "text": "your tweet text here",
+  "tickers": []
 }`;
         return await withRetry('AI generation', async () => {
             const response = await fetch(`${config.AI_API_URL}/chat/completions`, {
@@ -119,11 +129,11 @@ const RelevanceSchema = z.object({ relevant: z.boolean() });
 export async function evaluateTweetRelevance(tweetText: string): Promise<{ relevant: boolean, error?: boolean }> {
     try {
         if (!tweetText.trim()) throw new Error('Cannot evaluate an empty tweet');
-        const prompt = Analyze if the following tweet is related to cryptocurrency, blockchain, web3, trading, finance, tech, or markets.\nTweet: ""\nReturn ONLY valid JSON:\n{\n  "relevant": true/false\n};
+        const prompt = `Analyze if the following tweet is related to cryptocurrency, blockchain, web3, trading, finance, tech, or markets.\nTweet: "${tweetText}"\nReturn ONLY valid JSON:\n{\n  "relevant": true/false\n}`;
         
-        const response = await fetch(${config.AI_API_URL}/chat/completions, {
+        const response = await fetch(`${config.AI_API_URL}/chat/completions`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': Bearer  },
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.AI_API_KEY}` },
             body: JSON.stringify({
                 model: config.AI_MODEL,
                 messages: [{ role: 'user', content: prompt }],
@@ -131,7 +141,7 @@ export async function evaluateTweetRelevance(tweetText: string): Promise<{ relev
             })
         });
 
-        if (!response.ok) throw new Error(AI error: );
+        if (!response.ok) throw new Error(`AI error: ${response.status}`);
         const data = await response.json();
         let content = data.choices[0].message.content;
         const firstBrace = content.indexOf('{');
@@ -141,7 +151,7 @@ export async function evaluateTweetRelevance(tweetText: string): Promise<{ relev
         const parsed = RelevanceSchema.parse(JSON.parse(content));
         return { relevant: parsed.relevant };
     } catch (error) {
-        logger.error(Failed to evaluate tweet relevance: );
+        logger.error(`Failed to evaluate tweet relevance: ${error}`);
         // ASSUME RELEVANT ON FAILURE to prevent silent dropping of coverage
         return { relevant: true, error: true };
     }

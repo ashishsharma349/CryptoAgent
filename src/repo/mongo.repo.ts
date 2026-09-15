@@ -133,6 +133,7 @@ export async function getAgentConfig() {
             twitter_client_type: config.twitter.clientType || 'unofficial',
             twitter_auth_token: config.twitter.authToken || '',
             twitter_ct0: config.twitter.ct0 || '',
+            rotation_state: { last_lane: null, last_lane_date: null, consecutive_days_count: 0 },
             updated_at: new Date().toISOString()
         };
         await collection.insertOne(agentConfig);
@@ -143,6 +144,9 @@ export async function getAgentConfig() {
         agentConfig.twitter_client_type = config.twitter.clientType || 'unofficial';
         agentConfig.twitter_auth_token = config.twitter.authToken || '';
         agentConfig.twitter_ct0 = config.twitter.ct0 || '';
+    }
+    if (!agentConfig.rotation_state) {
+        agentConfig.rotation_state = { last_lane: null, last_lane_date: null, consecutive_days_count: 0 };
     }
     
     return agentConfig;
@@ -156,6 +160,20 @@ export async function updateAgentConfig(updates: any) {
     await collection.updateOne(
         { account_id: config.ACCOUNT_ID },
         { "$set": updates },
+        { upsert: true }
+    );
+}
+
+export async function incrementLaneRejection(lane: string) {
+    if (!lane) return;
+    const { connectDB } = require('./mongo.repo');
+    const database = await connectDB();
+    const collection = database.collection('daily_counters');
+    const dateStr = new Date().toISOString().split('T')[0];
+    const updateField = 'rejections_lane_' + lane;
+    await collection.updateOne(
+        { account_id: config.ACCOUNT_ID, date: dateStr },
+        { $inc: { [updateField]: 1 } },
         { upsert: true }
     );
 }

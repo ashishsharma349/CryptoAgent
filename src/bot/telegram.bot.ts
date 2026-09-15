@@ -68,6 +68,11 @@ export async function executeTwitterPost(dbId: string, rawDraftText: string, typ
         logger.error(`Twitter post failed for ${dbId}: ${e}`);
         await updateActionStatus(dbId, 'post_failed', undefined, String(e?.data?.detail || e.message || e));
         if (type === 'post') {
+            if (contextData && contextData.lane) {
+                logger.warn(`[LANE_METRICS] Lane "${contextData.lane}" failed to post to Twitter. Divergence increased.`);
+                const { incrementLaneRejection } = require('../repo/mongo.repo');
+                await incrementLaneRejection(contextData.lane);
+            }
             const { scheduleBackfillPost } = require('../scheduler');
             await scheduleBackfillPost();
         }
@@ -189,6 +194,11 @@ bot.on('callback_query', async (ctx) => {
             const fullText = ctxData ? (ctxData.displayLabel ? `${ctxData.displayLabel}:\n\n${ctxData.rawDraftText}` : ctxData.rawDraftText) : 'Draft content lost';
             await ctx.editMessageText(`[REJECTED] Discarded.\n\n${fullText}`);
             if (ctxData && ctxData.type === 'post') {
+                if (ctxData.contextData && ctxData.contextData.lane) {
+                    logger.warn(`[LANE_METRICS] Lane "${ctxData.contextData.lane}" rejected by user. Divergence increased.`);
+                    const { incrementLaneRejection } = require('../repo/mongo.repo');
+                    await incrementLaneRejection(ctxData.contextData.lane);
+                }
                 const { scheduleBackfillPost } = require('../scheduler');
                 await scheduleBackfillPost();
             }
@@ -212,7 +222,7 @@ bot.on('callback_query', async (ctx) => {
             let newDraft = null;
             if (ctxData.type === 'post') {
                 const { generateTweet } = require('../services/ai.service');
-                newDraft = await generateTweet(ctxData.contextData.trending, ctxData.contextData.pastTweets);
+                newDraft = await generateTweet(ctxData.contextData.trending, ctxData.contextData.pastTweets, undefined, ctxData.contextData.lane);
             } else if (ctxData.type === 'reply' || ctxData.type === 'quote') {
                 const { TweetSchema } = require('../services/ai.service');
                 const { withRetry } = require('../utils/retry.util');
@@ -252,6 +262,11 @@ bot.on('callback_query', async (ctx) => {
                 await updateActionStatus(dbId, 'compliance_failed', undefined, 'Regeneration failed compliance after 3 retries');
                 await ctx.editMessageText(`[REGENERATION FAILED] Could not generate compliant text.`);
                 if (ctxData.type === 'post') {
+                    if (ctxData.contextData && ctxData.contextData.lane) {
+                        logger.warn(`[LANE_METRICS] Lane "${ctxData.contextData.lane}" failed compliance on regeneration. Divergence increased.`);
+                        const { incrementLaneRejection } = require('../repo/mongo.repo');
+                        await incrementLaneRejection(ctxData.contextData.lane);
+                    }
                     const { scheduleBackfillPost } = require('../scheduler');
                     await scheduleBackfillPost();
                 }
@@ -279,6 +294,6 @@ export async function sendAlert(message: string) {
     try {
         await bot.telegram.sendMessage(config.TELEGRAM_CHAT_ID, message);
     } catch (e) {
-        logger.error(Failed to send alert: );
+        logger.error(`Failed to send alert:`);
     }
 }

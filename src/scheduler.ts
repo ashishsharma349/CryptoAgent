@@ -23,6 +23,45 @@ export function startMasterScheduler() {
     logger.info('Master Scheduler started.');
 }
 
+function selectLaneForSlot(currentState: any): string {
+    const lanes = ['pulse', 'meme', 'opinion', 'education', 'tools'];
+    const weights = [40, 30, 10, 10, 10]; // Probabilities out of 100
+    
+    if (!currentState) currentState = { last_lane: null, last_lane_date: null, consecutive_days_count: 0 };
+    
+    let availableLanes = [...lanes];
+    let availableWeights = [...weights];
+    
+    if (currentState.consecutive_days_count >= 2 && currentState.last_lane) {
+        const idx = availableLanes.indexOf(currentState.last_lane);
+        if (idx !== -1) {
+            availableLanes.splice(idx, 1);
+            availableWeights.splice(idx, 1);
+        }
+    }
+    
+    const totalWeight = availableWeights.reduce((a, b) => a + b, 0);
+    let randomNum = Math.floor(Math.random() * totalWeight);
+    
+    let selectedLane = availableLanes[0];
+    for (let i = 0; i < availableLanes.length; i++) {
+        if (randomNum < availableWeights[i]) {
+            selectedLane = availableLanes[i];
+            break;
+        }
+        randomNum -= availableWeights[i];
+    }
+    
+    if (currentState.last_lane === selectedLane) {
+        currentState.consecutive_days_count++;
+    } else {
+        currentState.last_lane = selectedLane;
+        currentState.consecutive_days_count = 1;
+    }
+    
+    return selectedLane;
+}
+
 export async function planDailyPosts(overrideDate?: Date) {
     const agentConfig = await getAgentConfig();
     const minPosts = parseInt(agentConfig.min_posts_per_day as any) || 3;
@@ -42,6 +81,9 @@ export async function planDailyPosts(overrideDate?: Date) {
     const endHour = parseInt(agentConfig.schedule_end_hour as any) || 22;
 
     let attempts = 0;
+    let currentState = agentConfig.rotation_state || { last_lane: null, last_lane_date: null, consecutive_days_count: 0 };
+    const { updateAgentConfig } = require('./repo/mongo.repo');
+
     while (planned.length < numPosts && attempts < numPosts * 20) {
         attempts++;
         const postTime = new Date(now);
@@ -52,14 +94,21 @@ export async function planDailyPosts(overrideDate?: Date) {
 
         if (postTime > now && !scheduledTimes.has(scheduledTime)) {
             scheduledTimes.add(scheduledTime);
+            
+            const selectedLane = selectLaneForSlot(currentState);
+            currentState.last_lane_date = planningDate;
+
             planned.push({
                 account_id: config.ACCOUNT_ID,
                 planning_date: planningDate,
                 scheduled_time: scheduledTime,
+                lane: selectedLane,
                 executed: false
             });
         }
     }
+
+    await updateAgentConfig({ rotation_state: currentState });
 
     if (planned.length < numPosts) {
         logger.warn(`Only ${planned.length}/${numPosts} unique future post slots could be planned.`);
@@ -72,7 +121,7 @@ export async function planDailyPosts(overrideDate?: Date) {
     }
 }
 
-export async function runPipeline(plannedPostId?: string): Promise<boolean> {
+export async function runPipeline(plannedPostId?: string, lane?: string): Promise<boolean> {
     try {
         const canPost = await checkDailyLimit('post');
         if (!canPost) {
@@ -103,11 +152,16 @@ export async function runPipeline(plannedPostId?: string): Promise<boolean> {
         await updatePipelineRun(pipelineRunId, { memory_snapshot: pastTweets, memory_days: config.MEMORY_DAYS });
 
         logger.info('Generating tweet via AI...');
-        const draft = await generateTweet({ trending, news }, pastTweets);
+        const draft = await generateTweet({ trending, news }, pastTweets, undefined, lane);
         const { logAction } = require('./repo/mongo.repo');
         
         if (!draft) {
             logger.error('Failed to generate draft (or compliance failed). Aborting.');
+            if (lane) {
+                logger.warn(`[LANE_METRICS] Lane "${lane}" failed AI/compliance generation. Divergence increased.`);
+                const { incrementLaneRejection } = require('./repo/mongo.repo');
+                await incrementLaneRejection(lane);
+            }
             await updatePipelineRun(pipelineRunId, { status: 'ai_failed', error: 'Draft generation or compliance failed' });
             const dbId = await logAction('compliance_failed', 'Generation failed (Compliance or API error)', [], 'post');
             const { bot } = require('./bot/telegram.bot');
@@ -126,7 +180,7 @@ export async function runPipeline(plannedPostId?: string): Promise<boolean> {
         const dbId = await logAction('pending', draft.text, draft.tickers, 'post');
 
         const { sendDraftForApproval } = require('./bot/telegram.bot');
-        await sendDraftForApproval('', draft.text, dbId, 'post', { trending, pastTweets, plannedPostId });
+        await sendDraftForApproval('', draft.text, dbId, 'post', { trending, pastTweets, plannedPostId, lane });
 
         logger.info('Pipeline complete. Sent to Telegram with Auto-Post Timer.');
         return true;
@@ -223,11 +277,18 @@ export async function scheduleBackfillPost() {
         postTime.setMinutes(postTime.getMinutes() + 5);
     }
     
+    let currentState = agentConfig.rotation_state || { last_lane: null, last_lane_date: null, consecutive_days_count: 0 };
+    const { updateAgentConfig } = require('./repo/mongo.repo');
+    const selectedLane = selectLaneForSlot(currentState);
+    currentState.last_lane_date = now.toISOString().slice(0, 10);
+    await updateAgentConfig({ rotation_state: currentState });
+
     const collection = db.collection('planned_posts');
     await collection.insertOne({
         account_id: config.ACCOUNT_ID,
         planning_date: now.toISOString().slice(0, 10),
         scheduled_time: postTime.toISOString(),
+        lane: selectedLane,
         executed: false,
         is_backfill: true
     });
@@ -263,7 +324,7 @@ export async function executePlannedPosts(overrideDate?: Date) {
 
         if (pendingPost) {
             logger.info(`Time reached for planned post: ${pendingPost.scheduled_time}. Executing...`);
-            const pipelineSucceeded = await runPipeline(pendingPost._id.toString());
+            const pipelineSucceeded = await runPipeline(pendingPost._id.toString(), pendingPost.lane);
             if (!pipelineSucceeded) {
                 logger.warn(`Planned post ${pendingPost._id} pipeline failed (AI/compliance error).`);
             }

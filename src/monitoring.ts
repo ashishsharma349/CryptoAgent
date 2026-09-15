@@ -36,7 +36,6 @@ export async function checkMonitoredAccounts(overrideDate?: Date) {
         logger.info(`[MONITORING] Checking monitored accounts for Quote Tweets: ${accounts.join(', ')}`);
         
         const { evaluateTweetRelevance } = require('./services/ai.service');
-        const agentConfig = await getAgentConfig();
         let consecutiveEvalFailures = agentConfig.consecutive_eval_failures || 0;
 
         const client = await getTwitterClient();
