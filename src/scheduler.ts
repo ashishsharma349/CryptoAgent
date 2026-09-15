@@ -84,7 +84,8 @@ export async function planDailyPosts(overrideDate?: Date) {
     let currentState = agentConfig.rotation_state || { last_lane: null, last_lane_date: null, consecutive_days_count: 0 };
     const { updateAgentConfig } = require('./repo/mongo.repo');
 
-    while (planned.length < numPosts && attempts < numPosts * 20) {
+    const generatedTimes: string[] = [];
+    while (generatedTimes.length < numPosts && attempts < numPosts * 20) {
         attempts++;
         const postTime = new Date(now);
         const randomHour = Math.floor(Math.random() * (endHour - startHour + 1)) + startHour;
@@ -94,18 +95,23 @@ export async function planDailyPosts(overrideDate?: Date) {
 
         if (postTime > now && !scheduledTimes.has(scheduledTime)) {
             scheduledTimes.add(scheduledTime);
-            
-            const selectedLane = selectLaneForSlot(currentState);
-            currentState.last_lane_date = planningDate;
-
-            planned.push({
-                account_id: config.ACCOUNT_ID,
-                planning_date: planningDate,
-                scheduled_time: scheduledTime,
-                lane: selectedLane,
-                executed: false
-            });
+            generatedTimes.push(scheduledTime);
         }
+    }
+    
+    generatedTimes.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+    
+    for (const scheduledTime of generatedTimes) {
+        const selectedLane = selectLaneForSlot(currentState);
+        currentState.last_lane_date = planningDate;
+
+        planned.push({
+            account_id: config.ACCOUNT_ID,
+            planning_date: planningDate,
+            scheduled_time: scheduledTime,
+            lane: selectedLane,
+            executed: false
+        });
     }
 
     await updateAgentConfig({ rotation_state: currentState });
@@ -115,7 +121,6 @@ export async function planDailyPosts(overrideDate?: Date) {
     }
     
     if (planned.length > 0) {
-        planned.sort((a, b) => new Date(a.scheduled_time).getTime() - new Date(b.scheduled_time).getTime());
         await collection.insertMany(planned);
         logger.info(`Saved ${planned.length} planned posts to MongoDB.`);
     }
