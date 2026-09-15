@@ -72,7 +72,7 @@ export async function planDailyPosts(overrideDate?: Date) {
     }
 }
 
-export async function runPipeline(): Promise<boolean> {
+export async function runPipeline(plannedPostId?: string): Promise<boolean> {
     try {
         const canPost = await checkDailyLimit('post');
         if (!canPost) {
@@ -124,10 +124,10 @@ export async function runPipeline(): Promise<boolean> {
 
         logger.info('Sending to Telegram for approval...');
         const dbId = await logAction('pending', draft.text, draft.tickers, 'post');
-        
+
         const { sendDraftForApproval } = require('./bot/telegram.bot');
-        await sendDraftForApproval('', draft.text, dbId, 'post', { trending, pastTweets });
-        
+        await sendDraftForApproval('', draft.text, dbId, 'post', { trending, pastTweets, plannedPostId });
+
         logger.info('Pipeline complete. Sent to Telegram with Auto-Post Timer.');
         return true;
     } catch (error) {
@@ -263,12 +263,11 @@ export async function executePlannedPosts(overrideDate?: Date) {
 
         if (pendingPost) {
             logger.info(`Time reached for planned post: ${pendingPost.scheduled_time}. Executing...`);
-            const pipelineSucceeded = await runPipeline();
-            if (pipelineSucceeded) {
-                await collection.updateOne({ _id: pendingPost._id }, { "$set": { executed: true, executed_at: new Date().toISOString() } });
-            } else {
-                logger.warn(`Planned post ${pendingPost._id} was not marked executed because the pipeline failed.`);
+            const pipelineSucceeded = await runPipeline(pendingPost._id.toString());
+            if (!pipelineSucceeded) {
+                logger.warn(`Planned post ${pendingPost._id} pipeline failed (AI/compliance error).`);
             }
+            // Note: executed:true will be set by telegram.bot.ts after Twitter confirms post
         }
     } finally {
         plannedPostExecutionInProgress = false;

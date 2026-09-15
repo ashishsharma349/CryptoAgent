@@ -1,0 +1,24 @@
+export const TIMEOUTS = {
+    PAGE_LOAD: 5000,
+    PAGE_LOAD_LONG: 7000,
+    SELECTOR_WAIT: 10000,
+    ACTION_DELAY_SHORT: 1000,
+    ACTION_DELAY_MEDIUM: 2000,
+    ACTION_DELAY_LONG: 4000,
+    TWEET_SEND_WAIT: 5000,
+    GRAPHQL_RESPONSE_TIMEOUT: 10000,
+    NAVIGATION_TIMEOUT: 30000,
+} as const;
+
+export const RETRY = {
+    MAX_ATTEMPTS: 3,
+    DELAY_MS: 2000,
+} as const;
+
+export const REGENERATION = {
+    MAX_COUNT: 3,
+} as const;
+
+export const AUTO_APPROVE = {
+    DEFAULT_TIMEOUT_MINUTES: 15,
+} as const;

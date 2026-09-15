@@ -5,6 +5,7 @@ import { ITwitterClient, Mention } from './twitter.interface';
 import { getAgentConfig } from '../../repo/mongo.repo';
 import { config } from '../../config/env.config';
 import { withRetry } from '../../utils/retry.util';
+import { TIMEOUTS, RETRY } from '../../config/constants';
 
 puppeteer.use(StealthPlugin());
 
@@ -91,7 +92,7 @@ function trackCreatedTweet(page: Page) {
     page.on('response', listener);
 
     return async () => {
-        await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, 10000))]);
+        await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, TIMEOUTS.GRAPHQL_RESPONSE_TIMEOUT))]);
         page.off('response', listener);
         return createdTweetId;
     };
@@ -128,169 +129,173 @@ export class PuppeteerTwitterAdapter implements ITwitterClient {
     }
 
     async postTweet(text: string): Promise<string> {
-        const page = await this.getPage();
-        try {
-            if (!text?.trim()) throw new Error('Tweet text cannot be empty');
-            const getCreatedTweetId = trackCreatedTweet(page);
-            await page.goto('https://x.com/compose/tweet', { waitUntil: 'domcontentloaded' });
-            await new Promise(r => setTimeout(r, 5000));
-            
-            await page.waitForSelector('[data-testid="tweetTextarea_0"]', { timeout: 10000 });
-            await page.type('[data-testid="tweetTextarea_0"]', text);
-            await new Promise(r => setTimeout(r, 1000));
-            
-            await page.click('[data-testid="tweetButton"]');
-            await new Promise(r => setTimeout(r, 5000)); // wait for tweet to send
-            const createdTweetId = await getCreatedTweetId();
-            if (!createdTweetId) throw new Error('X did not return a created tweet ID');
-            return createdTweetId;
-        } finally {
-            await this.cleanup();
-        }
+        return await withRetry('Post Tweet', async () => {
+            const page = await this.getPage();
+            try {
+                if (!text?.trim()) throw new Error('Tweet text cannot be empty');
+                const getCreatedTweetId = trackCreatedTweet(page);
+                await page.goto('https://x.com/compose/tweet', { waitUntil: 'domcontentloaded' });
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD));
+
+                await page.waitForSelector('[data-testid="tweetTextarea_0"]', { timeout: TIMEOUTS.SELECTOR_WAIT });
+                await page.type('[data-testid="tweetTextarea_0"]', text);
+                await new Promise(r => setTimeout(r, TIMEOUTS.ACTION_DELAY_SHORT));
+
+                await page.click('[data-testid="tweetButton"]');
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD));
+                const createdTweetId = await getCreatedTweetId();
+                if (!createdTweetId) throw new Error('X did not return a created tweet ID');
+                return createdTweetId;
+            } finally {
+                await this.cleanup();
+            }
+        }, RETRY.MAX_ATTEMPTS, RETRY.DELAY_MS);
     }
 
     async repostTweet(tweetId: string): Promise<string> {
-        const page = await this.getPage();
-        try {
-            if (!tweetId?.trim()) throw new Error('Repost target ID cannot be empty');
-            await page.goto(`https://x.com/i/status/${tweetId}`, { waitUntil: 'domcontentloaded' });
-            await new Promise(r => setTimeout(r, 5000));
-            await page.waitForSelector('[data-testid="retweet"]', { timeout: 10000 });
-            await page.click('[data-testid="retweet"]');
-            await new Promise(r => setTimeout(r, 1000));
-            const reposted = await page.evaluate(() => {
-                const items = Array.from(document.querySelectorAll('[role="menuitem"], [data-testid]'));
-                const item = items.find(element => /^(Repost|Retweet)$/i.test((element.textContent || '').trim()));
-                if (!item) return false;
-                (item as HTMLElement).click();
-                return true;
-            });
-            if (!reposted) throw new Error('Repost option not found');
-            await new Promise(r => setTimeout(r, 4000));
-            return tweetId;
-        } finally {
-            await this.cleanup();
-        }
+        return await withRetry('Repost Tweet', async () => {
+            const page = await this.getPage();
+            try {
+                if (!tweetId?.trim()) throw new Error('Repost target ID cannot be empty');
+                await page.goto(`https://x.com/i/status/${tweetId}`, { waitUntil: 'domcontentloaded' });
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD));
+                await page.waitForSelector('[data-testid="retweet"]', { timeout: TIMEOUTS.SELECTOR_WAIT });
+                await page.click('[data-testid="retweet"]');
+                await new Promise(r => setTimeout(r, TIMEOUTS.ACTION_DELAY_SHORT));
+                const reposted = await page.evaluate(() => {
+                    const items = Array.from(document.querySelectorAll('[role="menuitem"], [data-testid]'));
+                    const item = items.find(element => /^(Repost|Retweet)$/i.test((element.textContent || '').trim()));
+                    if (!item) return false;
+                    (item as HTMLElement).click();
+                    return true;
+                });
+                if (!reposted) throw new Error('Repost option not found');
+                await new Promise(r => setTimeout(r, TIMEOUTS.ACTION_DELAY_LONG));
+                return tweetId;
+            } finally {
+                await this.cleanup();
+            }
+        }, RETRY.MAX_ATTEMPTS, RETRY.DELAY_MS);
     }
 
     async replyTweet(text: string, tweetId: string): Promise<string> {
-        const page = await this.getPage();
-        try {
-            if (!text?.trim()) throw new Error('Reply text cannot be empty');
-            if (!tweetId?.trim()) throw new Error('Reply target ID cannot be empty');
+        return await withRetry('Reply Tweet', async () => {
+            const page = await this.getPage();
+            try {
+                if (!text?.trim()) throw new Error('Reply text cannot be empty');
+                if (!tweetId?.trim()) throw new Error('Reply target ID cannot be empty');
 
-            let createdReplyId: string | null = null;
-            const responseTasks = new Set<Promise<void>>();
-            page.on('response', async response => {
-                if (!/graphql/i.test(response.url()) || !/CreateTweet|TweetCreate/i.test(response.url())) return;
-                const task = (async () => {
-                    try {
-                        const json = await response.json();
-                        createdReplyId = findCreatedTweetId(json?.data);
-                    } catch {
-                        // Ignore unrelated or non-JSON responses.
-                    }
-                })();
-                responseTasks.add(task);
-                await task;
-                responseTasks.delete(task);
-            });
+                let createdReplyId: string | null = null;
+                const responseTasks = new Set<Promise<void>>();
+                page.on('response', async response => {
+                    if (!/graphql/i.test(response.url()) || !/CreateTweet|TweetCreate/i.test(response.url())) return;
+                    const task = (async () => {
+                        try {
+                            const json = await response.json();
+                            createdReplyId = findCreatedTweetId(json?.data);
+                        } catch {
+                            // Ignore unrelated or non-JSON responses.
+                        }
+                    })();
+                    responseTasks.add(task);
+                    await task;
+                    responseTasks.delete(task);
+                });
 
-            await withRetry(`Open reply target ${tweetId}`, async () => {
-                await page.goto(`https://x.com/i/status/${tweetId}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                await new Promise(r => setTimeout(r, 5000));
-            }, 3, 2000);
-            
-            await page.waitForSelector('[data-testid="reply"]', { timeout: 10000 });
-            await page.click('[data-testid="reply"]');
-            await new Promise(r => setTimeout(r, 2000));
-            
-            await page.waitForSelector('[data-testid="tweetTextarea_0"]', { timeout: 10000 });
-            await page.type('[data-testid="tweetTextarea_0"]', text);
-            await new Promise(r => setTimeout(r, 1000));
-            
-            await page.click('[data-testid="tweetButton"]');
-            await new Promise(r => setTimeout(r, 5000));
-            await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, 10000))]);
+                await page.goto(`https://x.com/i/status/${tweetId}`, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.NAVIGATION_TIMEOUT });
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD));
 
-            if (!createdReplyId) throw new Error('X did not return a created reply ID');
-            return createdReplyId;
-        } finally {
-            await this.cleanup();
-        }
+                await page.waitForSelector('[data-testid="reply"]', { timeout: TIMEOUTS.SELECTOR_WAIT });
+                await page.click('[data-testid="reply"]');
+                await new Promise(r => setTimeout(r, TIMEOUTS.ACTION_DELAY_MEDIUM));
+
+                await page.waitForSelector('[data-testid="tweetTextarea_0"]', { timeout: TIMEOUTS.SELECTOR_WAIT });
+                await page.type('[data-testid="tweetTextarea_0"]', text);
+                await new Promise(r => setTimeout(r, TIMEOUTS.ACTION_DELAY_SHORT));
+
+                await page.click('[data-testid="tweetButton"]');
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD));
+                await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, TIMEOUTS.GRAPHQL_RESPONSE_TIMEOUT))]);
+
+                if (!createdReplyId) throw new Error('X did not return a created reply ID');
+                return createdReplyId;
+            } finally {
+                await this.cleanup();
+            }
+        }, RETRY.MAX_ATTEMPTS, RETRY.DELAY_MS);
     }
 
     async quoteTweet(text: string, tweetId: string): Promise<string> {
-        const page = await this.getPage();
-        try {
-            if (!text?.trim()) throw new Error('Quote text cannot be empty');
-            if (!tweetId?.trim()) throw new Error('Quote target ID cannot be empty');
-            const getCreatedTweetId = trackCreatedTweet(page);
-            await page.goto(`https://x.com/i/status/${tweetId}`, { waitUntil: 'domcontentloaded' });
-            await new Promise(r => setTimeout(r, 5000));
-            
-            // Retweet button usually has data-testid="retweet"
-            await page.waitForSelector('[data-testid="retweet"]', { timeout: 10000 });
-            await page.click('[data-testid="retweet"]');
-            await new Promise(r => setTimeout(r, 1000));
-            
-            // Click quote option (usually the second menu item or specific testid)
-            await page.evaluate(() => {
-                const spans = Array.from(document.querySelectorAll('span'));
-                const quoteSpan = spans.find(s => s.innerText.includes('Quote'));
-                if (quoteSpan) quoteSpan.click();
-            });
-            await new Promise(r => setTimeout(r, 2000));
-            
-            await page.waitForSelector('[data-testid="tweetTextarea_0"]', { timeout: 10000 });
-            await page.type('[data-testid="tweetTextarea_0"]', text);
-            await new Promise(r => setTimeout(r, 1000));
-            
-            await page.click('[data-testid="tweetButton"]');
-            await new Promise(r => setTimeout(r, 5000));
-            const createdTweetId = await getCreatedTweetId();
-            if (!createdTweetId) throw new Error('X did not return a created quote ID');
-            return createdTweetId;
-        } finally {
-            await this.cleanup();
-        }
+        return await withRetry('Quote Tweet', async () => {
+            const page = await this.getPage();
+            try {
+                if (!text?.trim()) throw new Error('Quote text cannot be empty');
+                if (!tweetId?.trim()) throw new Error('Quote target ID cannot be empty');
+                const getCreatedTweetId = trackCreatedTweet(page);
+                await page.goto(`https://x.com/i/status/${tweetId}`, { waitUntil: 'domcontentloaded' });
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD));
+
+                await page.waitForSelector('[data-testid="retweet"]', { timeout: TIMEOUTS.SELECTOR_WAIT });
+                await page.click('[data-testid="retweet"]');
+                await new Promise(r => setTimeout(r, TIMEOUTS.ACTION_DELAY_SHORT));
+
+                await page.evaluate(() => {
+                    const spans = Array.from(document.querySelectorAll('span'));
+                    const quoteSpan = spans.find(s => s.innerText.includes('Quote'));
+                    if (quoteSpan) quoteSpan.click();
+                });
+                await new Promise(r => setTimeout(r, TIMEOUTS.ACTION_DELAY_MEDIUM));
+
+                await page.waitForSelector('[data-testid="tweetTextarea_0"]', { timeout: TIMEOUTS.SELECTOR_WAIT });
+                await page.type('[data-testid="tweetTextarea_0"]', text);
+                await new Promise(r => setTimeout(r, TIMEOUTS.ACTION_DELAY_SHORT));
+
+                await page.click('[data-testid="tweetButton"]');
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD));
+                const createdTweetId = await getCreatedTweetId();
+                if (!createdTweetId) throw new Error('X did not return a created quote ID');
+                return createdTweetId;
+            } finally {
+                await this.cleanup();
+            }
+        }, RETRY.MAX_ATTEMPTS, RETRY.DELAY_MS);
     }
 
     async getMentions(sinceId?: string): Promise<Mention[]> {
-        const page = await this.getPage();
-        try {
-            let mentions: Mention[] = [];
-            const responseTasks = new Set<Promise<void>>();
-            
-            page.on('response', async (response: HTTPResponse) => {
-                if (!/graphql/i.test(response.url()) || !/NotificationsTimeline|Mentions/i.test(response.url())) return;
-                const task = (async () => {
-                    try {
-                        const json = await response.json();
-                        mentions.push(...collectTweets(json?.data));
-                    } catch (e) {
-                        // Ignore unrelated or non-JSON GraphQL responses.
-                    }
-                })();
-                responseTasks.add(task);
-                await task;
-                responseTasks.delete(task);
-            });
+        return await withRetry('Fetch Mentions', async () => {
+            const page = await this.getPage();
+            try {
+                let mentions: Mention[] = [];
+                const responseTasks = new Set<Promise<void>>();
 
-            await withRetry('Fetch mentions', async () => {
-                await page.goto('https://x.com/notifications/mentions', { waitUntil: 'domcontentloaded', timeout: 30000 });
-                await new Promise(r => setTimeout(r, 5000));
-            }, 3, 2000);
-            await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, 10000))]);
-            
-            return Array.from(new Map(
-                mentions
-                    .filter(mention => isAfterCursor(mention.id, sinceId))
-                    .map(mention => [mention.id, mention])
-            ).values());
-        } finally {
-            await this.cleanup();
-        }
+                page.on('response', async (response: HTTPResponse) => {
+                    if (!/graphql/i.test(response.url()) || !/NotificationsTimeline|Mentions/i.test(response.url())) return;
+                    const task = (async () => {
+                        try {
+                            const json = await response.json();
+                            mentions.push(...collectTweets(json?.data));
+                        } catch (e) {
+                            // Ignore unrelated or non-JSON GraphQL responses.
+                        }
+                    })();
+                    responseTasks.add(task);
+                    await task;
+                    responseTasks.delete(task);
+                });
+
+                await page.goto('https://x.com/notifications/mentions', { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.NAVIGATION_TIMEOUT });
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD));
+                await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, TIMEOUTS.GRAPHQL_RESPONSE_TIMEOUT))]);
+
+                return Array.from(new Map(
+                    mentions
+                        .filter(mention => isAfterCursor(mention.id, sinceId))
+                        .map(mention => [mention.id, mention])
+                ).values());
+            } finally {
+                await this.cleanup();
+            }
+        }, RETRY.MAX_ATTEMPTS, RETRY.DELAY_MS);
     }
 
     async getLatestTweet(username: string): Promise<Mention | null> {
@@ -299,39 +304,39 @@ export class PuppeteerTwitterAdapter implements ITwitterClient {
     }
 
     async getLatestTweets(username: string, limit = 2): Promise<Mention[]> {
-        const page = await this.getPage();
-        try {
-            if (!username?.trim()) throw new Error('Username cannot be empty');
-            if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error('Tweet limit must be between 1 and 20');
-            let tweets: Mention[] = [];
-            const responseTasks = new Set<Promise<void>>();
+        return await withRetry(`Fetch Latest Tweets @${username}`, async () => {
+            const page = await this.getPage();
+            try {
+                if (!username?.trim()) throw new Error('Username cannot be empty');
+                if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error('Tweet limit must be between 1 and 20');
+                let tweets: Mention[] = [];
+                const responseTasks = new Set<Promise<void>>();
 
-            page.on('response', (response: HTTPResponse) => {
-                if (/graphql/i.test(response.url())) {
-                    const task = (async () => {
-                        try {
-                            const json = await response.json();
-                            tweets.push(...collectTweets(json?.data).map(tweet => ({ ...tweet, username: username.replace('@', '') })));
-                        } catch (e) {
-                            // Ignore unrelated or non-JSON GraphQL responses.
-                        }
-                    })();
-                    responseTasks.add(task);
-                    void task.finally(() => responseTasks.delete(task));
-                }
-            });
+                page.on('response', (response: HTTPResponse) => {
+                    if (/graphql/i.test(response.url())) {
+                        const task = (async () => {
+                            try {
+                                const json = await response.json();
+                                tweets.push(...collectTweets(json?.data).map(tweet => ({ ...tweet, username: username.replace('@', '') })));
+                            } catch (e) {
+                                // Ignore unrelated or non-JSON GraphQL responses.
+                            }
+                        })();
+                        responseTasks.add(task);
+                        void task.finally(() => responseTasks.delete(task));
+                    }
+                });
 
-            await withRetry(`Fetch latest tweet @${username}`, async () => {
                 await page.goto(`https://x.com/${username}`, { waitUntil: 'networkidle2', timeout: 45000 });
-                await new Promise(r => setTimeout(r, 7000));
-            }, 3, 2000);
-            await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, 10000))]);
-            
-            return Array.from(new Map(tweets.map(tweet => [tweet.id, tweet])).values())
-                .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-                .slice(0, limit);
-        } finally {
-            await this.cleanup();
-        }
+                await new Promise(r => setTimeout(r, TIMEOUTS.PAGE_LOAD_LONG));
+                await Promise.race([Promise.allSettled([...responseTasks]), new Promise(r => setTimeout(r, TIMEOUTS.GRAPHQL_RESPONSE_TIMEOUT))]);
+
+                return Array.from(new Map(tweets.map(tweet => [tweet.id, tweet])).values())
+                    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                    .slice(0, limit);
+            } finally {
+                await this.cleanup();
+            }
+        }, RETRY.MAX_ATTEMPTS, RETRY.DELAY_MS);
     }
 }

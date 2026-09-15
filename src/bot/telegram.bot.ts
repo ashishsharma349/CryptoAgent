@@ -37,7 +37,32 @@ export async function executeTwitterPost(dbId: string, rawDraftText: string, typ
         await updateActionStatus(dbId, 'posted', tweetId);
         if (type === 'post') await incrementDailyCounter('post');
         if (type === 'reply' || type === 'quote') await incrementDailyCounter('reply');
-        
+
+        // Mark planned_post as executed after Twitter confirms success
+        if (type === 'post' && contextData.plannedPostId) {
+            const { connectDB } = require('../repo/mongo.repo');
+            const db = await connectDB();
+            const { ObjectId } = require('mongodb');
+            await db.collection('planned_posts').updateOne(
+                { _id: new ObjectId(contextData.plannedPostId) },
+                { $set: { executed: true, executed_at: new Date().toISOString(), tweet_id: tweetId } }
+            );
+            logger.info(`Marked planned_post ${contextData.plannedPostId} as executed after Twitter confirmation`);
+        }
+
+        // Update cursor for engagement flow after successful reply
+        if (type === 'reply' && contextData.mentionId) {
+            const { connectDB } = require('../repo/mongo.repo');
+            const db = await connectDB();
+            const collection = db.collection('accounts_config');
+            await collection.updateOne(
+                { account_id: config.ACCOUNT_ID },
+                { $set: { last_mention_cursor: contextData.mentionId } },
+                { upsert: true }
+            );
+            logger.info(`Updated mention cursor to ${contextData.mentionId} after successful reply`);
+        }
+
         return { success: true, tweetId };
     } catch (e: any) {
         logger.error(`Twitter post failed for ${dbId}: ${e}`);
@@ -111,7 +136,7 @@ export async function sendDraftForApproval(displayLabel: string, rawDraftText: s
 }
 
 bot.on('callback_query', async (ctx) => {
-    // @ts-ignore
+    if (!('data' in ctx.callbackQuery)) return;
     const data = ctx.callbackQuery.data;
     if (!data) return;
     
@@ -123,7 +148,7 @@ bot.on('callback_query', async (ctx) => {
 
     const [, action, dbId] = match;
     const ctxData = pendingContexts.get(dbId);
-    // @ts-ignore
+    if (!('message' in ctx.callbackQuery)) return;
     const message = ctx.callbackQuery.message;
 
     try {
